@@ -22,15 +22,26 @@ function App() {
     console.log("Camera error:", camera.error);
   };
 
+  const handleTakePicture = async () => {
+    try {
+      const result = await cameraRef.current?.takePicture();
+      console.log("Picture taken:", result);
+      // result contains: { decision, reasonCode, image }
+    } catch (error) {
+      console.error("Failed to take picture:", error);
+    }
+  };
+
   const handleReceivingPrediction = ({
     decision,
     reasonCode,
+    image,
   }: {
     decision: string;
     reasonCode: string;
     image: string;
   }) => {
-    console.log(decision, reasonCode);
+    console.log(decision, reasonCode, image);
   };
 
   return (
@@ -39,7 +50,7 @@ function App() {
         <Camera
           ref={cameraRef}
           className="w-full h-full object-cover"
-          facingMode={"environment"} // or "user"
+          facingMode={"environment"}
           onPrediction={handleReceivingPrediction}
         />
       </div>
@@ -56,6 +67,12 @@ function App() {
           className="px-4 py-2 bg-red-500 text-white rounded"
         >
           Stop Camera
+        </button>
+        <button
+          onClick={handleTakePicture}
+          className="px-4 py-2 bg-purple-600 text-white rounded"
+        >
+          Take Picture
         </button>
         <button
           onClick={getCameraStatus}

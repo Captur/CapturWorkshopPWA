@@ -14,6 +14,11 @@ const MODEL_HEIGHT = 341;
 export interface CameraRef {
   startCamera: () => Promise<void>;
   stopCamera: () => void;
+  takePicture: () => Promise<{
+    decision: string;
+    reasonCode: string;
+    image: string;
+  }>;
   isActive: boolean;
   isStarting: boolean;
   error: string | null;
@@ -36,6 +41,7 @@ export interface CameraProps {
 export const Camera = forwardRef<CameraRef, CameraProps>((props, ref) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const workerRef = useRef<Worker | null>(null);
 
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [cameraStarting, setCameraStarting] = useState(false);
@@ -86,9 +92,84 @@ export const Camera = forwardRef<CameraRef, CameraProps>((props, ref) => {
     setCameraActive(false);
   };
 
+  const takePicture = async (): Promise<{
+    decision: string;
+    reasonCode: string;
+    image: string;
+  }> => {
+    if (!cameraActive || !videoRef.current || !workerRef.current) {
+      throw new Error("Camera is not active or worker is not initialized");
+    }
+
+    const video = videoRef.current;
+
+    if (video.readyState < 2) {
+      throw new Error("Video is not ready");
+    }
+
+    const videoWidth = video.videoWidth;
+    const videoHeight = video.videoHeight;
+
+    const videoAspectRatio = videoWidth / videoHeight;
+    const modelAspectRatio = MODEL_WIDTH / MODEL_HEIGHT;
+
+    let resizeWidth: number;
+    let resizeHeight: number;
+
+    if (videoAspectRatio > modelAspectRatio) {
+      resizeWidth = MODEL_WIDTH;
+      resizeHeight = Math.round(MODEL_WIDTH / videoAspectRatio);
+    } else {
+      resizeHeight = MODEL_HEIGHT;
+      resizeWidth = Math.round(MODEL_HEIGHT * videoAspectRatio);
+    }
+
+    try {
+      const bitmap = await createImageBitmap(video, {
+        resizeWidth,
+        resizeHeight,
+        resizeQuality: "high",
+      });
+
+      return new Promise((resolve, reject) => {
+        const handleMessage = (e: MessageEvent) => {
+          if (e.data.type === "prediction") {
+            workerRef.current?.removeEventListener("message", handleMessage);
+            const decision = e.data.decision;
+            const image = e.data.originalImage;
+            const reasonCode = decision.reasonCode;
+
+            resolve({
+              decision,
+              reasonCode,
+              image,
+            });
+          } else if (e.data.type === "error") {
+            workerRef.current?.removeEventListener("message", handleMessage);
+            reject(new Error(e.data.error));
+          }
+        };
+
+        workerRef.current?.addEventListener("message", handleMessage);
+        workerRef.current?.postMessage(
+          {
+            type: "predict",
+            bitmap,
+            width: MODEL_WIDTH,
+            height: MODEL_HEIGHT,
+          },
+          [bitmap]
+        );
+      });
+    } catch (error) {
+      throw new Error(`Error creating bitmap: ${error}`);
+    }
+  };
+
   useImperativeHandle(ref, () => ({
     startCamera,
     stopCamera,
+    takePicture,
     isActive: cameraActive,
     isStarting: cameraStarting,
     error: cameraError,
@@ -103,6 +184,7 @@ export const Camera = forwardRef<CameraRef, CameraProps>((props, ref) => {
 
     async function initWorker() {
       worker = new Worker("/worker.js", { type: "classic" });
+      workerRef.current = worker;
       await new Promise<void>((resolve, reject) => {
         worker.onmessage = (e) => {
           if (e.data.type === "init-done") resolve();
@@ -186,8 +268,6 @@ export const Camera = forwardRef<CameraRef, CameraProps>((props, ref) => {
               image,
             });
 
-            console.log(reasonCode);
-
             isLooping = false;
 
             if (shouldContinuePredictions) {
@@ -209,7 +289,10 @@ export const Camera = forwardRef<CameraRef, CameraProps>((props, ref) => {
 
     return () => {
       shouldContinuePredictions = false;
-      if (worker) worker.terminate();
+      if (worker) {
+        worker.terminate();
+        workerRef.current = null;
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cameraActive]);
